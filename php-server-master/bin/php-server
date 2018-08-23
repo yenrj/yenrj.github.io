@@ -1,0 +1,562 @@
+#!/bin/bash
+
+# check if stdout is a terminal
+if test -t 1; then
+
+  # see if it supports colors
+  ncolors=$(tput colors)
+
+  if test -n "$ncolors" && test $ncolors -ge 2; then
+    HILIGHT='\033[0;32m'
+    COMMENT='\033[0;33m'
+    INFO='\033[0;36m'
+    ERROR='\033[1;31m'
+    B='\033[1;38m'
+    U='\033[4;37m'
+    C='\033[0m' # Clear (no color)
+  fi
+fi
+
+getCWD ()
+{
+  local SOURCE="${BASH_SOURCE[0]}"
+  # Resolve $SOURCE until the file is no longer a symlink.
+  while [ -h "$SOURCE" ]; do
+    local DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+    SOURCE="$(readlink "$SOURCE")"
+    # If $SOURCE was a relative symlink, we need to resolve it relative to the path where the symlink file was located.
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+  done
+  echo "$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+}
+
+self="$(basename $0)"
+PID_FILE="/tmp/$self.pid"
+BASE_DIR="$(dirname "$(getCWD)")"
+ROUTER_FILE="$BASE_DIR/src/devServerRouter.php"
+service_name='php-server'
+plist="$HOME/Library/LaunchAgents/$service_name.plist"
+php="php"
+log="$HOME/.php-server.log"
+options_file="$HOME/.php-server.options"
+
+syntax()
+{
+  printf "
+${B}SYNTAX$C
+    ${B}$self$C ${U}command$C [${U}options$C]
+    ${B}$self$C [${B}--help$C]
+
+${B}COMMAND$C
+    ${HILIGHT}${B}start$C - Starts the web server.
+
+        ${B}SYNTAX$C
+            ${B}$self start$C [${B}-p$C|${B}--port$C] [${B}-a$C|${B}--address$C] [${B}-l$C|${B}--log$C] [${B}-n$C|${B}--no-log$C] [${B}-g$C|${B}--global$C] [${B}-r$C|${B}--root$C] [${B}-f$C|${B}--foreground$C] [${B}-x$C|${B}--executable$C]
+
+        ${B}OPTIONS$C
+            ${B}-p, --port       ${C}The TCP/IP port the web server will listen on.
+                             $INFO[default: 8000]$C
+            ${B}-a, --address    ${C}The IP address the web server will listen on.
+                             $INFO[default: localhost]$C
+            ${B}-l, --log        ${C}The path of a log file where the server's logging output will be saved.
+                             $INFO[default: $log]$C
+            ${B}-n, --no-log     ${C}Disable logging.
+            ${B}-g, --global     ${C}If specified, the server will serve all sites under the root web directory.
+            ${B}-r, --root       ${C}The root web directory's name or path. If it's a name, the directory will be searched for
+                             starting at the current directory and going upwards. Alternatively, you may specify the
+                             full path.
+                             $INFO[default: Sites]$C
+            ${B}-f, --foreground ${C}Don't run the server as a background process.
+            ${B}-x, --executable ${C}The path to the PHP interpreter.
+                             $INFO[default: searched on \$PATH]$C
+
+${B}COMMAND$C
+    ${HILIGHT}${B}stop$C - Stops the web server.
+
+${B}COMMAND$C
+    ${HILIGHT}${B}restart$C - Stops the web server and starts it again with the same options as before.
+
+${B}COMMAND$C
+    ${HILIGHT}${B}status$C - Checks if the web server is running.
+
+${B}COMMAND$C
+    ${HILIGHT}${B}install$C - Installs the server as a system user agent that is auto-started on login.
+              The server runs in $INFO--global$C mode.
+              ${B}This works on macOS only!$C
+
+        ${B}SYNTAX$C
+            ${B}$self install$C [${B}-p$C|${B}--port$C] [${B}-a$C|${B}--address$C] [${B}-l$C|${B}--log$C] [${B}-n$C|${B}--no-log$C] [${B}-r$C|${B}--root$C] [${B}-e$C|${B}--env$C]
+
+        ${B}OPTIONS$C
+            ${B}-e, --env        ${C}The path to a script that will set environment variables.
+                             This is required if you specify a port < 1024, as the server will run from the root user
+                             account and it will not inherit the current user's environment.
+                             $INFO[default: ~/.profile - if the file exists and port < 1024]$C
+
+${B}COMMAND$C
+    ${HILIGHT}${B}uninstall$C - Shuts down and uninstalls a previously installed user agent.
+                ${B}This works on macOS only!$C
+
+${B}COMMAND$C
+    ${HILIGHT}${B}self-update$C - Updates this tool to the latest version.
+
+"
+  exit 1
+}
+
+error ()
+{
+  echo -e "
+$1
+"
+  exit 1
+}
+
+finish ()
+{
+  echo -e "
+$1
+"
+  exit 0
+}
+
+syntax-error ()
+{
+  echo -e "
+${ERROR}Syntax error!$C"
+  syntax
+}
+
+getPID ()
+{
+  # Case: server running as a standard process
+  if [ -f "$PID_FILE" ]; then
+    cat $PID_FILE 2>/dev/null
+    return
+  fi
+  # Case: server running as an user agent
+  if [ -f "$plist" ]; then
+    # Case: server running as the current user
+    pid=$(launchctl list | grep php-server | cut -f 1)
+    if [ "$pid" != "-" -a "$pid" != "" ]; then
+      echo $pid
+    fi
+    # Case: server running as root (when port < 1024)
+    launchctl print system/php-server 2>/dev/null | grep -o 'id\s*=.*' | grep -oE '\d+'
+  fi
+}
+
+isRunning ()
+{
+  if [ -n "$1" ]; then
+    kill -0 $1 > /dev/null 2>&1
+  else
+    $(exit 1)
+  fi
+}
+
+onWindows ()
+{
+  [ -n "$WINDIR" ]
+  return $?
+}
+
+runBackgroundCommand ()
+{
+  nohup $1 > $2 2>&1 & echo $!
+}
+
+getFileOwner ()
+{
+  stat -f '%Su' $1
+}
+
+requireSudo ()
+{
+  sudo -p "
+Root privileges are required for this operation.
+Your password:" ls > /dev/null || exit
+}
+
+command=$1
+shift
+case "$command" in
+
+  "start")
+    echo "
+Starting server..."
+
+    port=8000
+    address="localhost"
+    global=""
+    rootWasSet=""
+    root="Sites"
+    foreground=""
+    starting_daemon=""
+    env="."
+    original_options="$@"
+
+    while true; do
+      case "$1" in
+        '')
+          break;
+          ;;
+        --port|-p)
+          shift
+          port=$1
+          ;;
+        --address|-a)
+          shift
+          address=$1
+          ;;
+        --log|-l)
+          shift
+          log=$1
+          ;;
+        --no-log|-n)
+          log=/dev/null
+          ;;
+        --global|-g)
+          global=true
+          ;;
+        --root|-r)
+          shift
+          root=$1
+          rootWasSet=true
+          ;;
+        --foreground|-f)
+          foreground=true
+          ;;
+        --executable|-x)
+          shift
+          php=$1
+          if [ ! -f "$php" ]; then
+            error "$php ${ERROR}was not found$C"
+          fi
+          ;;
+        # -d is reserved for internal use
+        -d)
+          starting_daemon=true
+          ;;
+        # -e is reserved for internal use
+        --env|-e)
+          shift
+          env=$1
+          ;;
+        *)
+          error "Invalid argument ${ERROR}$1$C"
+      esac
+      shift
+    done
+
+    if [ -z "$starting_daemon" ]; then
+      # Starting as a normal process (not a daemon)
+
+      # Check if the process already exists
+      pid=$(getPID)
+      if isRunning "$pid"; then
+        error "The server is ${ERROR}already running$C
+PID: ${HILIGHT}$pid$C"
+      fi
+
+      # If already configured to run as a daemon, start it as such
+      if [ -f "$plist" ]; then
+        if [ -n "$original_options" ]; then
+          error "${ERROR}Not allowed$C
+You can't specify options when the server is configured to run as a daemon/UA
+You'll need to uninstall it first and then run it or install it again with the new options"
+        fi
+        launchctl start $service_name
+        if [ $? -ne 0 ]; then
+          requireSudo
+          sudo launchctl start $service_name
+        fi
+        exec $0 status
+      fi
+
+      if [ -z "$original_options" -a -f "$options_file" ]; then
+        confirm=''
+        while [[ ! $confirm =~ ^[YyNn] ]]; do
+          read -p "Use options from last run? [Y/n] " confirm
+          case "$confirm" in
+            y|Y|"")
+              $0 start $(cat "$options_file")
+              exit $?
+              ;;
+          esac
+        done
+      fi
+
+    fi
+
+    dir=$(pwd)
+    if [ -n "$global" ]; then
+      if [ -d "$root" ]; then
+        dir="$root"
+      else
+        while true; do
+          current=$(basename "$dir")
+          [ "$current" == "$root" ] && break
+          dir=$(dirname "$dir")
+          if [ "$dir" == "/" ]; then
+            error "Directory ${ERROR}$root$C was not found"
+          fi
+        done
+      fi
+    else
+      if [ $rootWasSet ]; then
+        error "The ${B}--root$C option can only be used on ${HILIGHT}global$C mode"
+      fi
+    fi
+    [ "$log" == "/dev/null" ] && logMsg="${COMMENT}disabled$C" || logMsg="${HILIGHT}$log$C"
+    if onWindows; then
+      if [ "$log" != "/dev/null" ]; then
+        logMsg="${COMMENT}not available on Windows$C"
+        log=/dev/null
+      fi
+    fi
+    where="$address:$port"
+    options='-d variables_order=EGPCS'
+
+    # For ports < 1024 sudo is needed, but only if the script isn't being run as root (ex: via lauchd) to prevent process duplication
+    if [ $port -lt 1024 -a $(id -u) -ne 0 ]; then
+      requireSudo
+      php="sudo -E $php"
+    fi
+    if [ "$env" != "." ]; then
+      # run the script inheriting its variables
+      #. $env
+      env
+    fi
+
+    if [ -n "$foreground" ]; then
+      exec $php -S $where -t $dir $options $ROUTER_FILE
+    else
+      pid=$(runBackgroundCommand "$php -S $where -t $dir $options $ROUTER_FILE" $log)
+      echo $pid > $PID_FILE
+      $0 status || exit $?
+      # finish() is not used to prevent extra blank line
+      echo -e "Listening at: ${HILIGHT}$where$C
+Publishing:   ${HILIGHT}$dir$C
+Log file:     ${HILIGHT}$logMsg$C
+"
+      echo "$original_options" > ~/.php-server.options
+    fi
+    ;;
+
+  "stop")
+    echo "
+Stopping server..."
+    # If running as a daemon, stop it as such
+    if [ -f "$plist" ]; then
+      launchctl stop $service_name
+      if [ $? -ne 0 ]; then
+        requireSudo
+        sudo launchctl stop $service_name
+      fi
+      exec $0 status
+    fi
+
+    pid=$(getPID)
+    if [ -z "$pid" ]; then
+      error "The server is ${ERROR}already stopped$C"
+    fi
+    msg="The web server is now ${HILIGHT}stopped$C"
+    kill $pid 2>/dev/null
+    if [ $? -eq 1 ]; then
+      requireSudo
+      sudo kill $pid 2>/dev/null
+      if [ $? -eq 1 ]; then
+        msg="${ERROR}The server was not running$C"
+      fi
+    fi
+    rm -f "$PID_FILE"
+    rm -f "$log"
+    rm -f "$options_file"
+    finish "$msg"
+    ;;
+
+  "status")
+    mode=""
+    if [ -f "$plist" ]; then
+      mode="
+Mode: ${HILIGHT}daemon/UA$C"
+    fi
+    pid=$(getPID)
+    if [ -z "$pid" ]; then
+      error "The server is ${HILIGHT}stopped$C $mode"
+    else
+      if isRunning $pid; then
+        finish "The server is ${HILIGHT}running$C
+PID:  ${HILIGHT}$pid$C $mode"
+      else
+        rm -f $PID_FILE
+        error "The server ${ERROR}crashed$C"
+      fi
+    fi
+    ;;
+
+  "restart")
+    # If running as a daemon, restart it as such
+    if [ -f "$plist" ]; then
+      ($0 stop || exit $?)
+       exec $0 start
+    fi
+
+    if [ -f "$options_file" ]; then
+      options="$(cat "$options_file")"
+      pid=$(getPID)
+      if [ -n "$pid" ]; then
+        $0 stop || exit $?
+      fi
+      echo "Restarting..."
+      $0 start $options
+    else
+      error "Sorry, there is no record of the previous command-line options.
+Please run ${HILIGHT}$(basename $0) start [options]$C now."
+    fi
+    exit $?
+    ;;
+
+  "install")
+    if [ -f "$plist" ]; then
+      error "The user agent is ${ERROR}already installed$C"
+    fi
+    pid=$(getPID)
+    if [ -n "$pid" ]; then
+      echo "
+Shutting down the current server"
+      $0 stop || exit $?
+    fi
+
+    port=8000
+    address="localhost"
+    root="$HOME/Sites"
+    php=`which php` # capture the current PHP location, as it may be different when running as a user agent
+    env='.'
+
+    while true; do
+      case "$1" in
+        '')
+          break;
+          ;;
+        --port|-p)
+          shift
+          port=$1
+          ;;
+        --address|-a)
+          shift
+          address=$1
+          ;;
+        --log|-l)
+          shift
+          log=$1
+          ;;
+        --no-log|-n)
+          log=/dev/null
+          ;;
+        --root|-r)
+          shift
+          root=$1
+          ;;
+        --env|-e)
+          shift
+          env=$1
+          ;;
+        *)
+          error "Invalid argument ${ERROR}$1$C"
+      esac
+      shift
+    done
+
+    sudo=''
+    if [ $port -lt 1024 ]; then
+      requireSudo
+      sudo='sudo'
+      if [ "$env" == "." -a -f ~/.profile ]; then
+        env=~/.profile
+      fi
+    fi
+
+    echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple Computer//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+   <key>Label</key>
+   <string>php-server</string>
+   <key>ProgramArguments</key>
+   <array>
+      <string>$HOME/.composer/vendor/bin/php-server</string>
+      <string>start</string>
+      <string>-p</string>
+      <string>$port</string>
+      <string>-a</string>
+      <string>$address</string>
+      <string>-r</string>
+      <string>$root</string>
+      <string>-x</string>
+      <string>$php</string>
+      <string>-g</string>
+      <string>-f</string>
+      <string>-d</string>
+      <string>-e</string>
+      <string>$env</string>
+   </array>
+   <key>RunAtLoad</key>
+   <true/>
+   <key>StandardOutPath</key>
+   <string>$log</string>
+   <key>StandardErrorPath</key>
+   <string>$log</string>
+</dict>
+</plist>
+" > "$plist" || exit $?
+    chmod 600 "$plist" || exit $?
+    if [ -n "$sudo" ]; then
+      sudo chown root "$plist"
+    fi
+    $sudo launchctl load "$plist" || exit $?
+    echo -e "
+The user agent is now ${HILIGHT}installed$C and it will auto-start whenever you log in"
+    $0 status || exit $?
+    [ "$log" == "/dev/null" ] && log="disabled"
+    # finish() is not used to prevent extra blank line
+    echo -e "Listening at: ${HILIGHT}$address:$port$C
+Publishing:   ${HILIGHT}$root$C
+Log file:     ${HILIGHT}$log$C
+"
+    ;;
+
+  "uninstall")
+    if [ -f "$plist" ]; then
+      # Check if the agent runs as root
+      sudo=''
+      owner=$(getFileOwner "$plist")
+      if [ "$owner" == 'root' ]; then
+        requireSudo
+        sudo='sudo'
+      fi
+      $sudo launchctl unload "$plist" || exit $?
+      $sudo rm "$plist" || exit $?
+      rm -f "$log"
+      finish "The user agent is now ${HILIGHT}uninstalled$C"
+    else
+      error "The user agent is ${ERROR}already uninstalled$C"
+    fi
+    ;;
+
+  "self-update")
+    composer global update php-kit/php-server
+    ;;
+
+  "--help"|"")
+  printf "
+${B}NAME$C
+    ${B}$self$C -- a lightweight development web server for running PHP web applications
+"
+    syntax
+    ;;
+
+  *)
+    syntax-error
+esac
