@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <title>Example Node.js Web Server</title>
+  <link rel="stylesheet" type="text/css" href="style.css">
+</head>
+<body>
+  <div id="wrapper">
+    <h1>Example Node.js Web Server</h1>
+    <p>Just a simple web server that does some semi-interesting things to showcase some of the interesting parts of Node.js.</p>
+    <h3><code>uname -a</code></h3>
+    <pre>{{ uname }}</pre>
+    <h3><code>uptime</code></h3>
+    <pre>{{ uptime }}</pre>
+    <h3><code>cat /proc/cpuinfo</code></h3>
+    <pre>{{ cpuinfo }}</pre>
+    <h3><code>cat /proc/meminfo</code></h3>
+    <pre>{{ meminfo }}</pre>
+  </div>
+</body>
+</html>
