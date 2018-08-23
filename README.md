@@ -1,18 +1,57 @@
-# A simple functional example web server for Node.js
+**_This project has moved to https://gitlab.com/eidheim/Simple-Web-Server._**
 
-This server was extracted from a basic web server I wrote (quickly) to run on my Kindle Paperwhite after I managed to get Node.js running on it. It was pure novelty but it turns out to be a nice example of the kind of thing that Node.js is good at. So I've heavily documented the code and hopefully you only need a little bit of JavaScript knowledge to get going with this (perhaps you don't even need much JavaScript knowledge?).
+Simple-Web-Server
+=================
 
-## Getting started
+A very simple, fast, multithreaded, platform independent HTTP and HTTPS server and client library implemented using C++11 and Asio (both Boost.Asio and standalone Asio can be used). Created to be an easy way to make REST resources available from C++ applications. 
 
- 1. Install [Node.js](http://nodejs.org/). You can also do this via your OS's [package manager](https://github.com/joyent/node/wiki/Installing-Node.js-via-package-manager). Node.js is very easy to compile and install from the main repo, so feel free to do that too. Node comes with *npm*, the Node.js Package Manager, which you'll need to use to fetch the optional dependencies in this project.
- 2. Clone this repo to somewhere handy.
- 3. Run the command `npm install` in the root of the repo. This will read the *package.json* file and figure out what optional dependencies need to be fetched and installed into a *node_modules* directory where they can be automatically loaded when you `require()` them from the application.
- 4. Run the web server with the command `node ./`. This loads and runs the `"main"` script found in the *package.json* file, in this case *index.js*.
- 5. Point a web browser at http://localhost:8080/
- 6. Read, understand and go wild!
+See https://gitlab.com/eidheim/Simple-WebSocket-Server for an easy way to make WebSocket/WebSocket Secure endpoints in C++. Also, feel free to check out the new C++ IDE supporting C++11/14/17: https://gitlab.com/cppit/jucipp. 
 
-*index.js* is your starting point for understanding what's going on. *package.json* is your project's "descriptor" and tells npm which dependencies to install and where your main script file is. *public/* is where static files are served from, anything you put in there will be available via your web server. *templates/* just holds an index.html file which is a [swig](http://paularmstrong.github.com/swig/) template file.
+### Features
 
-## Licence
+* Asynchronous request handling
+* Thread pool if needed
+* Platform independent
+* HTTPS support
+* HTTP persistent connection (for HTTP/1.1)
+* Client supports chunked transfer encoding
+* Timeouts, if any of Server::timeout_request and Server::timeout_content are >0 (default: Server::timeout_request=5 seconds, and Server::timeout_content=300 seconds)
+* Simple way to add REST resources using regex for path, and anonymous functions
 
-This project is Copyright (c) 2012 Rod Vagg [@rvagg](https://twitter.com/rvagg) and licenced under the MIT licence. All rights not explicitly granted in the MIT license are reserved. See the included LICENSE file for more details.
+### Usage
+
+See http_examples.cpp or https_examples.cpp for example usage. 
+
+See particularly the JSON-POST (using Boost.PropertyTree) and the GET /match/[number] examples, which are most relevant.
+
+### Dependencies
+
+* Boost.Asio or standalone Asio
+* Boost is required to compile the examples
+* For HTTPS: OpenSSL libraries 
+
+### Compile and run
+
+Compile with a C++11 compliant compiler:
+```sh
+mkdir build
+cd build
+cmake ..
+make
+cd ..
+```
+
+#### HTTP
+
+Run the server and client examples: `./build/http_examples`
+
+Direct your favorite browser to for instance http://localhost:8080/
+
+#### HTTPS
+
+Before running the server, an RSA private key (server.key) and an SSL certificate (server.crt) must be created. Follow, for instance, the instructions given here (for a self-signed certificate): http://www.akadia.com/services/ssh_test_certificate.html
+
+Run the server and client examples: `./build/https_examples`
+
+Direct your favorite browser to for instance https://localhost:8080/
+
